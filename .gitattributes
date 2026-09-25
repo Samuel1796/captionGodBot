@@ -1,0 +1,4 @@
+# The Docker image is built on Linux. Keep LF everywhere so a CRLF checkout on
+# Windows can never break a Dockerfile RUN continuation.
+* text=auto eol=lf
+*.png binary

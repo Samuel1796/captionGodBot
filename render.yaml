@@ -1,0 +1,13 @@
+services:
+  - name: caption-remover-bot
+    type: web
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: CAPTION_REMOVER_TOKEN
+        sync: false
+      - key: ALLOWED_USER_IDS
+        sync: false
