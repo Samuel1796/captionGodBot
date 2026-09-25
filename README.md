@@ -40,22 +40,47 @@ The repo includes a `Dockerfile` and a `render.yaml` blueprint.
 3. When prompted, paste your `CAPTION_REMOVER_TOKEN`.
 4. Deploy.
 
-### Why it's a web service and not a worker
+### Webhook vs polling
 
-Render only offers a free tier for *web* services — background workers are
-paid only. A web service must bind to `$PORT`, so `bot/health.py` runs a tiny
-endpoint on `/healthz` purely to satisfy that.
+The bot picks its mode automatically from `RENDER_EXTERNAL_URL`, which Render
+sets on every web service. No configuration needed.
 
-**Free services spin down after 15 minutes without inbound traffic** and take
-about a minute to wake. A polling bot receives no inbound HTTP, so it would
-sleep constantly. Point an uptime pinger at your `/healthz` URL every 10
-minutes to keep it awake:
+| Where | Mode | Why |
+| --- | --- | --- |
+| Render | Webhook | Telegram POSTs each update to the service |
+| Local | Long polling | No public URL needed |
 
-- [UptimeRobot](https://uptimerobot.com) — free, 5-minute intervals
-- [cron-job.org](https://cron-job.org) — free
+This matters more than it looks. Render only wakes a sleeping free instance on
+**inbound** traffic. Polling is *outbound*, so a sleeping polling bot can never
+be woken by someone messaging it - the message just sits in Telegram's queue
+until something else happens to wake the service. A webhook is an inbound POST,
+so **the message itself wakes the bot**.
 
-The free allowance is **750 instance-hours/month** and a month is ~730 hours,
-so one always-on service fits inside it.
+Nothing is lost either way: `drop_pending_updates` is `False`, so anything
+queued while the instance was asleep is delivered on wake rather than
+discarded. The first message after a sleep waits about a minute while the
+container starts, and the bot replies explaining the delay before handling it.
+
+The webhook path and its secret token are derived from a SHA-256 of the bot
+token, so both are unguessable and stable across restarts with nothing extra to
+configure. Telegram echoes the secret back in a header, so forged POSTs are
+rejected.
+
+### Do you still need an uptime pinger?
+
+Optional now, and there is a real trade-off:
+
+- **Without a pinger** the service sleeps when idle and wakes on demand. The
+  first message after a sleep waits ~1 minute. Uses very few instance hours.
+- **With a pinger** ([UptimeRobot](https://uptimerobot.com) or
+  [cron-job.org](https://cron-job.org) hitting `/healthz` every 5 minutes) it
+  never sleeps and every message is instant. Uses ~730 hours a month.
+
+The free allowance is **750 instance-hours per month across the whole
+workspace**, and a month is ~730 hours. So a pinger can keep **only one**
+service awake all month. If you run both bots on free instances, either ping
+neither, or ping just one - pinging both exhausts the allowance around the
+halfway mark and suspends everything until the next month.
 
 This bot is an ideal fit for a free instance: it never downloads or uploads
 anything, needs no ffmpeg, and only ever talks to `api.telegram.org`.
@@ -86,7 +111,7 @@ restyle it.
 ## Layout
 
 ```
-main.py              # entry point: health endpoint + polling
+main.py              # entry point: webhook when deployed, polling locally
 bot/
   core.py            # config, logging, allowlist, rate-limit retry
   handlers.py        # all the bot logic

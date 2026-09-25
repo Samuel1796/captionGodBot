@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from contextlib import suppress
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -25,7 +26,7 @@ from aiogram.types import (
     Message,
 )
 
-from bot.core import call_with_retry, setup_logging
+from bot.core import call_with_retry, queued_while_asleep, setup_logging
 
 log = setup_logging("caption-remover")
 router = Router()
@@ -68,8 +69,28 @@ async def on_start(message: Message) -> None:
     await message.answer(HELP_TEXT)
 
 
+# Someone whose message sat in the queue while the host was asleep has been
+# waiting a while with no feedback. Nothing could have replied at the time, but
+# now that we are up it costs nothing to say so - once per chat per boot.
+_delay_explained: set[int] = set()
+
+
+async def _note_delay_if_queued(message: Message) -> None:
+    if message.chat.id in _delay_explained:
+        return
+    if not queued_while_asleep(message.date):
+        return
+    _delay_explained.add(message.chat.id)
+    with suppress(TelegramAPIError):
+        await message.answer(
+            "😴 I was asleep and your message just woke me - sorry for "
+            "the wait. Working on it now."
+        )
+
+
 @router.message(HAS_MEDIA)
 async def on_media(message: Message, bot: Bot) -> None:
+    await _note_delay_if_queued(message)
     if message.media_group_id:
         _buffer_album_item(message, bot)
         return

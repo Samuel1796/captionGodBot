@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, TypeVar
 
@@ -56,6 +58,46 @@ def allowed_user_ids() -> set[int]:
 
 # Render assigns the port its router forwards to; 10000 is its usual default.
 PORT = get_int("PORT", 10000)
+
+# When the host stops the process while idle, messages sent in that window sit
+# in Telegram's queue and all arrive at once on the next boot. Nothing can
+# reply during the sleep - no code is running - but once awake we can tell
+# these apart from fresh messages and explain the delay.
+BOOT_TIME = datetime.now(timezone.utc)
+
+
+def queued_while_asleep(sent_at: datetime | None) -> bool:
+    """True when a message was sent before this process started."""
+    if sent_at is None:
+        return False
+    if sent_at.tzinfo is None:
+        sent_at = sent_at.replace(tzinfo=timezone.utc)
+    return sent_at < BOOT_TIME
+
+
+# Render sets RENDER_EXTERNAL_URL on every web service, so its presence is a
+# reliable signal that we are deployed rather than running locally.
+#
+# This matters more than it looks. Render only wakes a sleeping free instance
+# on *inbound* traffic, and polling is outbound - so a polling bot that has
+# gone to sleep can never be woken by someone messaging it. A webhook is an
+# inbound POST from Telegram, which means the message itself wakes the service.
+WEBHOOK_BASE_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+
+
+def use_webhook() -> bool:
+    return bool(WEBHOOK_BASE_URL)
+
+
+def webhook_path_and_secret(token: str) -> tuple[str, str]:
+    """Derive an unguessable path and shared secret from the bot token.
+
+    Deriving rather than generating keeps both stable across restarts, and
+    needs no extra configuration. Telegram echoes the secret back in the
+    X-Telegram-Bot-Api-Secret-Token header so forged POSTs are rejected.
+    """
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    return f"/tg/{digest[:32]}", digest[32:64]
 
 
 # --------------------------------------------------------------------------
